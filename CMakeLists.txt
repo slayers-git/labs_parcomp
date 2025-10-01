@@ -8,3 +8,4 @@ add_subdirectory (src/parlib)
 include_directories (include/parlib)
 
 add_subdirectory (src/lab1)
+add_subdirectory (src/lab2)

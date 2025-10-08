@@ -5,9 +5,11 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <sys/ioctl.h>
+/*#include <sys/ioctl.h>*/
 #include <sys/poll.h>
 #include <climits>
+
+#include <sstream>
 
 #include <algorithm>
 
@@ -23,12 +25,6 @@ int Server::serverSetup () {
     int opt = 1;
     res = setsockopt (sockfd, SOL_SOCKET, SO_REUSEADDR, (void *)&opt, sizeof (opt));
     if (res) {
-        close (sockfd);
-        return -1;
-    }
-
-    res = ioctl (sockfd, FIONBIO, (void *)&opt);
-    if (res < 0) {
         close (sockfd);
         return -1;
     }
@@ -63,13 +59,6 @@ int Server::clientSetup () {
     if (sockfd < 0)
         return -1;
 
-    int opt = 1;
-    res = ioctl (sockfd, FIONBIO, (void *)&opt);
-    if (res < 0) {
-        close (sockfd);
-        return -1;
-    }
-
     sockaddr_in server_addr;
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = htonl (m_config.addr);
@@ -77,44 +66,9 @@ int Server::clientSetup () {
     
     res = ::connect (sockfd, (struct sockaddr *)&server_addr, sizeof (server_addr));
     if (res) {
-        /* The socket is non-blocking, so have to handle EINPROGRESS as a success 
-         *
-         * Maybe there is a better way to do this? */
-        if (errno != EINPROGRESS) {
-            close (sockfd);
-            return -1;
-        }
-
-        struct pollfd pollfd { };
-        pollfd.fd = sockfd;
-        pollfd.events = POLLOUT;
-        
-        res = ::poll (&pollfd, 1, 0);
-        if (res < 0) {
-            std::cerr << "Failed to connect.\n";
-            close (sockfd);
-            return -1;
-        }
-        if (res == 0) {
-            std::cerr << "Timeout\n";
-            close (sockfd);
-            return -1;
-        }
-        
-        int opt;
-        socklen_t len = 4;
-        res = ::getsockopt (sockfd, SOL_SOCKET, SO_ERROR, &opt, &len);
-        if (res) {
-            std::cerr << "getsockopt.\n";
-            close (sockfd);
-            return -1;
-        }
-
-        if (opt != 0) {
-            std::cerr << "Failed to connect.\n";
-            close (sockfd);
-            return -1;
-        }
+        std::cerr << "Failed to connect.\n";
+        close (sockfd);
+        return -1;
     }
 
     m_clientSocket = sockfd;
@@ -140,42 +94,30 @@ int Server::serverLoop () {
     int res;
 
     /* Listening socket */
-    {
-        struct pollfd server_pollfd { };
-        server_pollfd.fd = m_listenerSocket;
-        server_pollfd.events = POLLIN;
-
-        m_pollfds.emplace_back (std::move (server_pollfd));
-    }
+    struct pollfd server_pollfd { };
+    server_pollfd.fd = m_listenerSocket;
+    server_pollfd.events = POLLIN;
 
     while (!m_shouldShutdown) {
         closeDeadConnections ();
 
-        res = ::poll (m_pollfds.data (), m_pollfds.size (), INT_MAX);
+        res = ::poll (&server_pollfd, 1, INT_MAX);
         if (res < 0) {
             std::cerr << "serverLoop: poll errored: " << strerror (errno) << '\n';
             m_shouldShutdown = true;
             return -1;
         }
 
-        for (uint32_t i = 0; i < m_pollfds.size (); ++i) {
-            const auto& fd = m_pollfds[i];
-            if (!fd.revents)
-                continue;
+        if (!server_pollfd.revents)
+            continue;
 
-            if (fd.revents != POLLIN) {
-                std::cerr << "Unexpected event.\n";
-                m_shouldShutdown = true;
-                return -1;
-            }
-
-            if (fd.fd == m_listenerSocket) {
-                res = acceptNewConnections ();
-            } else {
-                std::cout << "Poll received on sock: " << i << "\n";
-                res = readPollData (i);
-            }
+        if (server_pollfd.revents != POLLIN) {
+            std::cerr << "Unexpected event.\n";
+            m_shouldShutdown = true;
+            return -1;
         }
+
+        res = acceptNewConnections ();
     }
 
     return 0;
@@ -189,31 +131,11 @@ int Server::clientLoop () {
     server_pollfd.events = POLLIN;
 
     while (!m_shouldShutdown) {
-        res = ::poll (&server_pollfd, 1, INT_MAX);
-        if (res < 0) {
-            std::cerr << "clientLoop: Poll errored: " << strerror (errno) << "\n";
-            m_shouldShutdown = true;
-            return -1;
-        }
-        
-        if (server_pollfd.revents & POLLRDHUP) {
+        res = receiveServerMessages ();
+
+        if (!res) {
             std::cerr << "Peer closed connection\n";
             m_shouldShutdown = true;
-            return -1;
-        }
-        if (server_pollfd.revents & POLLERR) {
-            std::cerr << "Closed connection\n";
-            m_shouldShutdown = true;
-            return 0;
-        }
-
-        if (server_pollfd.revents & POLLIN) {
-            res = receiveServerMessages ();
-
-            if (!res) {
-                std::cerr << "Peer closed connection\n";
-                m_shouldShutdown = true;
-            }
         }
     }
 
@@ -228,10 +150,8 @@ int Server::receiveServerMessages () {
     do {
         res = recv (m_clientSocket, buffer, BUFSIZ, 0);
         if (res < 0) {
-            if (errno != EWOULDBLOCK) {
-                std::cout << "receiveServerMessages: recv error\n";
-                res = -1;
-            }
+            std::cout << "receiveServerMessages: recv error\n";
+            res = -1;
 
             break;
         }
@@ -241,12 +161,13 @@ int Server::receiveServerMessages () {
             break;
         } else {
             uint32_t len = res;
-            contents.append (buffer, len);
+            contents = std::string (buffer, buffer + len);
+            std::cout << contents;
         }
     } while (true);
 
     if (!contents.empty ())
-        std::cout << contents << "\n";
+        std::cout << contents;
 
     return contents.size ();
 }
@@ -261,19 +182,7 @@ int Server::acceptNewConnections () {
         socklen_t addr_len = sizeof (struct sockaddr_in);
         new_sockfd = ::accept (m_listenerSocket, (struct sockaddr *)&in_addr, &addr_len);
         if (new_sockfd < 0) {
-            if (errno != EWOULDBLOCK && errno != EAGAIN) {
-                std::cerr << "Failed to create a socket for an incoming connection\n";
-                return -1;
-            }
-
-            break;
-        }
-
-        int opt = 1;
-        res = ioctl (new_sockfd, FIONBIO, (void *)&opt);
-        if (res < 0) {
             std::cerr << "Failed to create a socket for an incoming connection\n";
-            close (new_sockfd);
             return -1;
         }
 
@@ -281,33 +190,25 @@ int Server::acceptNewConnections () {
         const auto addr = ntohl (in_addr.sin_addr.s_addr);
         std::cout << "Registring new connection: " << addr << ":" << port << '\n';
 
-        pollfd new_pollfd {};
-        new_pollfd.fd = new_sockfd;
-        new_pollfd.events = POLLIN;
-
+        m_clientThreads.emplace (new_sockfd,
+                std::thread (&Server::threadServerClientLoop, this, new_sockfd));
         m_clientSockets.emplace_back (new_sockfd);
-        m_pollfds.emplace_back (std::move (new_pollfd));
     } while (new_sockfd != -1);
 
     return 0;
 }
 
-int Server::readPollData (uint32_t pollfd_id) {
+void Server::threadServerClientLoop (int sockfd) {
     int res;
     bool close_connection = false;
-
-    const auto& pollfd = m_pollfds[pollfd_id];
-    auto sockfd = pollfd.fd;
 
     std::string contents;
     char buffer[BUFSIZ];
     do {
         res = ::recv (sockfd, buffer, BUFSIZ, 0);
         if (res < 0) {
-            if (errno != EWOULDBLOCK) {
-                std::cout << "readPollData: recv error.\n";
-                close_connection = true;
-            }
+            std::cout << "threadServerClientLoop: recv error.\n";
+            close_connection = true;
 
             break;
         }
@@ -317,24 +218,29 @@ int Server::readPollData (uint32_t pollfd_id) {
             break;
         } else {
             uint32_t len = res;
-            contents.append (buffer, len);
+            std::stringstream ss;
+            contents = std::string (buffer, buffer + len);
+            ss << "user_" << sockfd << ": " << contents << '\n';
+            std::cout << "Received " << contents << " from " << sockfd <<"\n";
+
+            broadcast (ss.str (), sockfd);
         }
     } while (true);
 
     if (close_connection) {
-        m_deadPollfds.emplace (pollfd_id);
         m_deadSockets.emplace (sockfd);
     }
-
-    std::cout << "Received " << contents << " from " << sockfd <<"\n";
-    return broadcast (Message ("user_1", contents));
 }
 
-int Server::broadcast (const Message& message) {
+int Server::broadcast (const std::string& message, int excluded_socket) {
     assert (m_mode == ServerMode::Host);
 
     for (uint32_t i = 0; i < m_clientSockets.size (); ++i) {
         const auto sockfd = m_clientSockets[i];
+
+        /* Don't send to the excluded socket */
+        if (sockfd == excluded_socket)
+            continue;
 
         /* Don't send to dead clients */
         if (m_deadSockets.find (sockfd) != m_deadSockets.end ()) {
@@ -349,13 +255,8 @@ int Server::broadcast (const Message& message) {
 }
 
 void Server::closeDeadConnections () {
-    if (!m_deadPollfds.empty ()) {
+    if (!m_deadSockets.empty ()) {
         std::cout << "Closing dead connections.\n";
-
-        for (auto it = m_deadPollfds.rbegin (); it != m_deadPollfds.rend (); ++it) {
-            const auto id = *it;
-            m_pollfds.erase (m_pollfds.begin () + id);
-        }
 
         for (auto it = m_deadSockets.rbegin (); it != m_deadSockets.rend (); ++it) {
             const auto sockfd = *it;
@@ -363,18 +264,19 @@ void Server::closeDeadConnections () {
 
             m_clientSockets.erase (std::find (m_clientSockets.begin (), m_clientSockets.end (),
                         sockfd));
+
+            m_clientThreads[sockfd].join ();
+            m_clientThreads.erase (sockfd);
         }
 
-        m_deadPollfds.clear ();
         m_deadSockets.clear ();
     }
 }
 
-int Server::sendMessageToSocket (int socket, const Message& message) {
+int Server::sendMessageToSocket (int sockfd, const std::string& message) {
     int res;
-    std::string final_message = message.getSender () + ": " + message.getContents ();
 
-    res = ::send (socket, final_message.data (), final_message.size (), 0);
+    res = ::send (sockfd, message.data (), message.size (), 0);
     if (res < 0) {
         std::cout << "sendMessageToSocket: res < 0\n";
         return -1;
@@ -404,7 +306,7 @@ void Server::disconnect () {
     m_shouldShutdown = true;
 }
 
-int Server::send (const Message& message) {
+int Server::send (const std::string& message) {
     assert (m_mode == ServerMode::Client);
     return sendMessageToSocket (m_clientSocket, message);
 }

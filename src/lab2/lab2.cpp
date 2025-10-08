@@ -40,7 +40,7 @@ static void inputLoop () {
             break;
         }
 
-        res = server->send (Message ("user_1", input));
+        res = server->send (input);
         if (res) {
             std::cerr << "ERROR: Didn't send.\n";
             continue;

@@ -22,25 +22,25 @@ struct Client {
 };
 
 /* High level representation of a message */
-class Message {
-private:
-    std::string m_sender;
-    std::string m_contents;
-
-public:
-    Message (const std::string& sender, const std::string& contents) :
-        m_sender (sender), m_contents (contents) { }
-    Message () = default;
-
-    const std::string& getSender () const noexcept {
-        return m_sender;
-    }
-
-    const std::string& getContents () const noexcept {
-        return m_contents;
-    }
-
-    ~Message () = default;
-};
+/*class Message {*/
+/*private:*/
+/*    std::string m_sender;*/
+/*    std::string m_contents;*/
+/**/
+/*public:*/
+/*    Message (const std::string& sender, const std::string& contents) :*/
+/*        m_sender (sender), m_contents (contents) { }*/
+/*    Message () = default;*/
+/**/
+/*    const std::string& getSender () const noexcept {*/
+/*        return m_sender;*/
+/*    }*/
+/**/
+/*    const std::string& getContents () const noexcept {*/
+/*        return m_contents;*/
+/*    }*/
+/**/
+/*    ~Message () = default;*/
+/*};*/
 
 #endif /* #define __COMMON_HPP__ */

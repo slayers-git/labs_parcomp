@@ -26,9 +26,8 @@ private:
 
     std::unordered_map<uint64_t, Client> m_clients;
     std::vector<int> m_clientSockets;
+    std::unordered_map<int, std::thread> m_clientThreads;
 
-    std::vector<struct pollfd> m_pollfds;
-    std::set<uint32_t> m_deadPollfds;
     std::set<uint32_t> m_deadSockets;
 
     /* Client thread that polls for new messages on the server */
@@ -54,14 +53,14 @@ private:
     /* Accept connection on listening socket */
     int acceptNewConnections ();
 
-    /* Since there is data on the socket, read it */
-    int readPollData (uint32_t id);
-
     /* Send a message to socket */
-    int sendMessageToSocket (int socket, const Message& message);
+    int sendMessageToSocket (int socket, const std::string& message);
 
     /* Receive queued messages from the server */
     int receiveServerMessages ();
+
+    /* Thread for serving the client */
+    void threadServerClientLoop (int sockfd);
 
 public:
     Server () = default;
@@ -70,8 +69,9 @@ public:
 
     int run ();
 
-    int broadcast (const Message& message);
-    int send (const Message& message);
+    /* Broadcast to all sockets bar the excluded one */
+    int broadcast (const std::string& message, int excluded_socket);
+    int send (const std::string& message);
 
     bool shouldShutdown () const noexcept {
         return m_shouldShutdown;
